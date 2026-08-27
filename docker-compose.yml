@@ -1,0 +1,22 @@
+version: "3.9"
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./exports:/app/exports
+    environment:
+      - BTFI_DATA_DIR=/app/data
+      - BTFI_CACHE_DIR=/app/data/cache
+  frontend:
+    image: node:20-slim
+    working_dir: /app/frontend
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app/frontend
+    depends_on:
+      - api
