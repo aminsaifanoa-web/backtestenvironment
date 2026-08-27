@@ -62,8 +62,29 @@ class ValueStrategy(Strategy):
                 val = -c if direction == "largest" else c  # if largest, lower signal => larger cap
                 sig[t] = val
             return sig
-        elif info_map and metric in info_map.get(tickers[0] if tickers else "", {}):
-            # fundamental
+        elif info_map:
+            # fundamental - check if mapped key exists for any ticker
+            key_map_check = {
+                    "pe": "trailingPE",
+                    "pb": "priceToBook",
+                    "dividend_yield": "dividendYield",
+                    "dividend_growth": "earningsGrowth",
+                    "roe": "returnOnEquity",
+                    "roic": "returnOnAssets",
+                    "market_cap": "marketCap",
+                    "fcf_yield": "freeCashflow",
+                    "earnings_yield": "trailingPE",
+                    "revenue_growth": "revenueGrowth",
+                    "earnings_growth": "earningsGrowth",
+                    "ev_ebitda": "enterpriseToEbitda",
+                    "ev_ebit": "enterpriseToEbitda",
+                }
+            mapped_key = key_map_check.get(metric)
+            has_fund = any(mapped_key in info_map.get(t, {}) and info_map.get(t, {}).get(mapped_key) not in (None, 0) for t in tickers[:5] if mapped_key) if mapped_key else False
+            # if no fundamental data at all, fall through to random proxy
+            if not has_fund and metric not in ("market_cap", "volatility") and not metric.startswith("momentum"):
+                # try still to build signals from available data, else fallback
+                pass
             sig = pd.DataFrame(index=dates, columns=tickers, dtype=float)
             for t in tickers:
                 info = info_map.get(t, {})
@@ -72,19 +93,22 @@ class ValueStrategy(Strategy):
                     "pe": "trailingPE",
                     "pb": "priceToBook",
                     "dividend_yield": "dividendYield",
+                    "dividend_growth": "earningsGrowth",  # proxy: yfinance lacks dividendGrowth; use earningsGrowth as closest
                     "roe": "returnOnEquity",
                     "roic": "returnOnAssets",  # proxy
                     "market_cap": "marketCap",
-                    "fcf_yield": "freeCashflow",  # need divide by market cap
+                    "fcf_yield": "freeCashflow",
                     "earnings_yield": "trailingEps",
+                    "revenue_growth": "revenueGrowth",
+                    "earnings_growth": "earningsGrowth",
+                    "ev_ebitda": "enterpriseToEbitda",
+                    "ev_ebit": "enterpriseToEbitda",
                 }
                 raw = info.get(key_map.get(metric, metric), np.nan)
-                # handle yields: higher is better => negate
-                if metric in ("dividend_yield","fcf_yield","earnings_yield","roe","roic","revenue_growth","earnings_growth"):
+                if metric in ("dividend_yield","dividend_growth","fcf_yield","earnings_yield","roe","roic","revenue_growth","earnings_growth"):
                     sig[t] = - (raw if raw is not None else np.nan)
                 else:
                     sig[t] = raw if raw is not None else np.nan
-                # fcf_yield special: raw is freeCashflow, need / marketCap
                 if metric == "fcf_yield":
                     fcf = info.get("freeCashflow", np.nan)
                     mc = info.get("marketCap", np.nan)
@@ -94,9 +118,20 @@ class ValueStrategy(Strategy):
                     pe = info.get("trailingPE", np.nan)
                     y = 1/pe if pe and pe != 0 else np.nan
                     sig[t] = -y if y==y else np.nan
-                # EV metrics not available -> NaN
+                if metric == "dividend_growth":
+                    # try 3yr dividend proxy via earningsGrowth; already set but refine
+                    g = info.get("earningsGrowth", info.get("revenueGrowth", np.nan))
+                    sig[t] = -g if g==g and g is not None else np.nan
                 if metric in ("ev_ebitda","ev_ebit"):
-                    sig[t] = info.get("enterpriseToEbitda", np.nan) if metric=="ev_ebitda" else info.get("enterpriseToRevenue", np.nan)
+                    # lower EV multiple = cheaper => keep raw (lower is better)
+                    v = info.get("enterpriseToEbitda", np.nan) if metric=="ev_ebitda" else info.get("enterpriseToRevenue", np.nan)
+                    # enterpriseToEbitda already lower=cheaper, keep as is; if missing use enterpriseValue/trailingEbit?
+                    if pd.isna(v):
+                        ev = info.get("enterpriseValue", np.nan)
+                        ebitda = info.get("ebitda", np.nan)
+                        if ev and ebitda:
+                            v = ev/ebitda
+                    sig[t] = v if v==v else np.nan
             return sig
         else:
             # fallback random or price-based
@@ -155,6 +190,7 @@ class MultifactorStrategy(Strategy):
                 vals["pe"] = info.get("trailingPE", np.nan)
                 vals["pb"] = info.get("priceToBook", np.nan)
                 vals["dividend_yield"] = info.get("dividendYield", np.nan)
+                vals["dividend_growth"] = info.get("earningsGrowth", info.get("revenueGrowth", np.nan))
                 vals["roe"] = info.get("returnOnEquity", np.nan)
                 vals["roic"] = info.get("returnOnAssets", np.nan)
                 fcf = info.get("freeCashflow", np.nan)
@@ -164,7 +200,6 @@ class MultifactorStrategy(Strategy):
                 vals["earnings_yield"] = (1/pe) if pe and pe!=0 else np.nan
                 vals["revenue_growth"] = info.get("revenueGrowth", np.nan)
                 vals["earnings_growth"] = info.get("earningsGrowth", np.nan)
-                # ev proxies
                 vals["ev_ebitda"] = info.get("enterpriseToEbitda", np.nan)
                 vals["ev_ebit"] = info.get("enterpriseToRevenue", np.nan)
                 metrics_at_dt[t] = vals

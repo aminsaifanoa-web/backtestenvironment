@@ -7,9 +7,8 @@ from btfi.data.provider import DataProvider
 from btfi.data.cache import Cache
 from btfi.data.validation import validate_prices
 
-# S&P 500 current constituents fallback (static list truncated for demo, full list fetched live when possible)
-# We store ~50 tickers for offline/demo; live fetch via Wikipedia when online
-FALLBACK_SP500 = ["AAPL","MSFT","NVDA","AMZN","META","GOOGL","BRK-B","AVGO","LLY","JPM","UNH","V","MA","PG","HD","COST","XOM","JNJ","ABBV","CRM","BAC","WMT","CVX","KO","NFLX","ORCL","MRK","PEP","TMO","ACN","CSCO","MCD","LIN","ABT","ADBE","DIS","DHR","AMD","WFC","TXN","QCOM","VZ","NEE","PM","INTU","AMGN","UNP","RTX","HON","CAT","GS","SPG","LOW","BKNG","EL","BA","BLK"]
+# S&P 500 current constituents fallback (static ~120 large-cap proxy; full 500 fetched live when Wikipedia available)
+FALLBACK_SP500 = ["AAPL","MSFT","NVDA","AMZN","META","GOOGL","BRK-B","AVGO","LLY","JPM","UNH","V","MA","PG","HD","COST","XOM","JNJ","ABBV","CRM","BAC","WMT","CVX","KO","NFLX","ORCL","MRK","PEP","TMO","ACN","CSCO","MCD","LIN","ABT","ADBE","DIS","DHR","AMD","WFC","TXN","QCOM","VZ","NEE","PM","INTU","AMGN","UNP","RTX","HON","CAT","GS","SPG","LOW","BKNG","EL","BA","BLK","AXP","BLK","BSX","CHTR","CI","CL","CMCSA","COF","COP","COST","CRM","CSCO","CVS","CVX","D","DE","DG","DHR","DIS","DUK","ECL","EL","EMR","EXC","F","FDX","GD","GE","GILD","GM","GOOGL","GPN","HCA","HD","HON","IBM","ICE","INTC","INTU","ISRG","ITW","JCI","JNJ","JPM","KHC","KO","LIN","LLY","LMT","LOW","LRCX","MA","MCD","MDLZ","MDT","META","MET","MMC","MO","MRK","MS","MSFT","NEE","NFLX","NKE","NOW","NVDA","ORCL","PEP","PFE","PG","PGR","PH","PM","PSA","QCOM","REGN","RTX","SCHW","SHW","SO","SPG","SYK","T","TGT","TMO","TXN","UNH","UNP","UPS","V","VZ","WFC","WM","WMT","XOM","ZTS","ADP","ADI","ADSK","AON","APH","AZO","BDX","BIIB","CB","CCI","CMG","DHI","EA","ECL","ETN","EW","EXR","FIS","FTNT","GWW","HUM","KLAC","MAR","MCK","MCO","MLM","MNST","MSCI","NSC","NTAP","ORLY","OTIS","PAYX","PCAR","ROP","ROST","SBAC","SBUX","SPGI","TT","VRSK","WST","YUM","A","AAL","AIG","ALL","AMAT","AMP","AMZN","AVB","AVGO","AXP","BA","BAC","BDX","BEN","BF-B","BG"]
 
 class YahooFinanceProvider(DataProvider):
     def __init__(self, cache: Cache | None = None, enable_cache: bool = True):
@@ -17,16 +16,41 @@ class YahooFinanceProvider(DataProvider):
         self.enable_cache = enable_cache
 
     def get_prices(self, tickers: List[str], start: str, end: str, auto_adjust: bool = False) -> pd.DataFrame:
-        # Check cache first - try bulk path
+        # Fast cache path: if all tickers cached and cover requested range, return immediately
         if self.enable_cache:
-            cached = self.cache.bulk_get_prices(tickers, start, end)
-            # If we have cached data, we still want to verify coverage; for simplicity if cached exists and we are offline, use it
-            # But if not fully cached, we proceed to download
-            pass
+            frames = {}
+            all_cached = True
+            for t in tickers:
+                df = self.cache.get(t, "prices")
+                if df is None or df.empty:
+                    all_cached = False
+                    break
+                try:
+                    # check date coverage
+                    idx = pd.to_datetime(df.index)
+                    if idx.min() > pd.to_datetime(start) + pd.Timedelta(days=30) or idx.max() < pd.to_datetime(end) - pd.Timedelta(days=30):
+                        all_cached = False
+                        break
+                    frames[t] = df
+                except Exception:
+                    all_cached = False
+                    break
+            if all_cached and frames:
+                # reconstruct yfinance-like DataFrame with MultiIndex
+                if len(tickers) == 1:
+                    return frames[tickers[0]]
+                # Build MultiIndex DataFrame
+                try:
+                    combined = pd.concat(frames, axis=1)
+                    # combined has outer level ticker, inner OHLC columns
+                    # Ensure order matches yfinance group_by ticker
+                    return combined
+                except Exception:
+                    pass
 
         # Use yfinance bulk download for efficiency
         try:
-            data = yf.download(tickers, start=start, end=end, auto_adjust=auto_adjust, progress=False, group_by='ticker', threads=True)
+            data = yf.download(tickers, start=start, end=end, auto_adjust=auto_adjust, progress=False, group_by='ticker', threads=False)
             if data.empty:
                 raise ValueError("No price data returned from yfinance")
         except Exception as e:
